@@ -1,3 +1,6 @@
+from typing import List
+
+import jdatetime
 import pandas as pd
 import matplotlib.pyplot as plt
 import arabic_reshaper
@@ -6,12 +9,15 @@ from matplotlib import font_manager
 import numpy as np
 import matplotlib.colors as mcolors
 
-def read_data(file_path, sheet_name=None):
+
+def read_data(file_path, sheet_name: str | List[str] =None):
     """Reads the Excel file and returns the specified sheet or all sheets as a dictionary."""
     try:
-        if sheet_name:
+        if sheet_name is str:
             sheets_dict = pd.read_excel(file_path, sheet_name=sheet_name)
             sheets_dict = {sheet_name: sheets_dict}  # Wrap in a dictionary for consistency
+        elif sheet_name is not None:
+            sheets_dict = pd.read_excel(file_path, sheet_name=sheet_name)
         else:
             sheets_dict = pd.read_excel(file_path, sheet_name=None)
             sheets_dict = change_sheet_name_to_english(sheets_dict)
@@ -19,6 +25,7 @@ def read_data(file_path, sheet_name=None):
     except FileNotFoundError:
         print(f"Error: The file '{file_path}' was not found.")
         return None
+
 
 def change_sheet_name_to_english(sheets_dict):
     translation_map = {
@@ -48,7 +55,8 @@ def change_sheet_name_to_english(sheets_dict):
 
     return translated_sheets_dict
 
-def process_price_data(price_data_df):
+
+def process_price_data(price_data_df, bot_workspace_df):
     if 'دسته گوشی شاپ' not in price_data_df.columns or 'کانال فروش' not in price_data_df.columns:
         print("Error: Required columns are missing from the PriceData sheet.")
         return
@@ -64,23 +72,122 @@ def process_price_data(price_data_df):
     print("\nFiltered DataFrame:")
     print(filtered_df)
 
-    channel_counts = filtered_df['کانال فروش'].value_counts()
+    plot_sales_distribution(filtered_df.copy(), bot_workspace_df.copy())
+    plot_sales_distribution(filtered_df.copy(), bot_workspace_df.copy(), show_least_selling=True)
 
-    # Reshape and fix the bidi order of the title
-    reshaped_text = arabic_reshaper.reshape('توزیع کانال فروش برای گوشی موبایل')
-    bidi_text = get_display(reshaped_text)
-
-    plt.figure(figsize=(8, 8))
-    plt.pie(channel_counts, labels=channel_counts.index, autopct='%1.1f%%', startangle=140)
-
-    # Set the title with the correct Farsi text
-    plt.title(bidi_text, fontdict={'fontname': 'XB Zar', 'fontsize': 16})
-
-    plt.show()
+    plot_channel_distribution(filtered_df.copy())
 
     plots_for_digikala_channel(filtered_df)
 
     plots_gooshi_shop_channel(filtered_df)
+
+
+def plot_channel_distribution(filtered_df):
+    channel_counts = filtered_df['کانال فروش'].value_counts()
+    # Reshape and fix the bidi order of the title
+    reshaped_text = arabic_reshaper.reshape('توزیع کانال فروش برای گوشی موبایل')
+    bidi_text = get_display(reshaped_text)
+    plt.figure(figsize=(8, 8))
+    plt.pie(channel_counts, labels=channel_counts.index, autopct='%1.1f%%', startangle=140)
+    # Set the title with the correct Farsi text
+    plt.title(bidi_text, fontdict={'fontname': 'XB Zar', 'fontsize': 16})
+    plt.show()
+
+
+def plot_sales_distribution(filtered_df, bot_workspace_df, number_of_products_to_plot=6, show_least_selling=False):
+    # Step 1: Find the top 6 'کد تنوع' based on occurrences
+    if show_least_selling:
+        top_kod_tanavo = filtered_df['کد تنوع'].value_counts().nsmallest(number_of_products_to_plot * 2).index
+    else:
+        top_kod_tanavo = filtered_df['کد تنوع'].value_counts().nlargest(number_of_products_to_plot*2).index
+
+
+    # Step 2: Convert 'زمان' from Jalali to Gregorian and then to datetime
+    filtered_df['زمان_میلادی'] = filtered_df['زمان'].apply(
+        lambda x: jdatetime.datetime.strptime(x, '%Y.%m.%d %H:%M').togregorian()
+    )
+
+    # Step 3: Function to get the product name based on 'کد تنوع'
+    def get_product_name(df, kod_mahsul):
+        product_name = df[df['کد محصول'] == kod_mahsul]['نام محصول'].iloc[0]
+        reshaped_name = arabic_reshaper.reshape(product_name)
+        bidi_name = get_display(reshaped_name)
+        return bidi_name
+
+    # Step 4: Function to map 'کد تنوع' to 'کد محصول'
+    def get_kod_mahsul_for_kod_tanavo(site_prices_df, kod_tanavo):
+        kod_mahsul = site_prices_df[site_prices_df['کد تنوع'] == kod_tanavo]['کد محصول'].iloc[0]
+        return kod_mahsul
+
+    # Step 5: Function to get all 'کد تنوع' for a 'کد محصول'
+    def get_all_kod_tanavo_for_kod_mahsul(site_prices_df, kod_mahsul):
+        return site_prices_df[site_prices_df['کد محصول'] == kod_mahsul]['کد تنوع'].dropna().unique()
+
+    # Step 6: Function to plot moving averages for the summed sales of all 'کد تنوع' for each 'کد محصول'
+    def plot_moving_average_all(df, bot_workspace_df, top_kod_tanavo, window_size=5, show_least_selling=False):
+        plt.figure(figsize=(12, 8))
+
+        for kod_tanavo in top_kod_tanavo:
+            # Get the corresponding 'کد محصول'
+            kod_mahsul = get_kod_mahsul_for_kod_tanavo(bot_workspace_df, kod_tanavo)
+
+            # Get all 'کد تنوع' for this 'کد محصول'
+            all_kod_tanavo = get_all_kod_tanavo_for_kod_mahsul(bot_workspace_df, kod_mahsul)
+
+            # Filter the PriceData for all the 'کد تنوع' related to this 'کد محصول'
+            df_kod = df[df['کد تنوع'].isin(all_kod_tanavo)]
+
+            # Resample by day and calculate the count
+            daily_counts = df_kod.resample('D', on='زمان_میلادی').size()
+
+            # Get the first and last dates
+            start_date = df['زمان_میلادی'].min().date()
+            end_date = df['زمان_میلادی'].max().date()
+
+            # Create a full date range from start_date to end_date
+            full_date_range = pd.date_range(start=start_date, end=end_date, freq='D')
+
+            # Reindex the daily_counts DataFrame to include all dates in the range and fill missing values with zero
+            daily_counts = daily_counts.reindex(full_date_range, fill_value=0)
+
+            # Calculate the moving average
+            moving_avg = daily_counts.rolling(window=window_size).mean()
+
+            # Get the product name for the legend
+            product_name = get_product_name(bot_workspace_df, kod_mahsul)
+
+            # Plot with a label for the legend
+            plt.plot(moving_avg, label=f'{product_name}, {kod_mahsul}')
+
+        # Set titles and labels with Farsi text
+        if show_least_selling:
+            plt.title('Moving Average of Sales for Worst 6 Products', fontdict={'fontname': 'XB Zar', 'fontsize': 16})
+        else:
+            plt.title('Moving Average of Sales for Top 6 Products', fontdict={'fontname': 'XB Zar', 'fontsize': 16})
+        plt.xlabel('Time', fontdict={'fontname': 'XB Zar', 'fontsize': 14})
+        plt.ylabel('Moving Average of Sales', fontdict={'fontname': 'XB Zar', 'fontsize': 14})
+
+        plt.grid(True, linestyle='--', alpha=0.6)
+        plt.legend(title='Product Name and id')
+        plt.tight_layout()
+        plt.show()
+
+    prod_id_list = []
+    filtered_top_kod_tanavo = []
+    for kod_tanavo in top_kod_tanavo:
+        kod_mahsul = get_kod_mahsul_for_kod_tanavo(bot_workspace_df, kod_tanavo)
+        if kod_mahsul not in prod_id_list:
+            prod_id_list.append(kod_mahsul)
+            filtered_top_kod_tanavo.append(kod_tanavo)
+            if len(filtered_top_kod_tanavo) == number_of_products_to_plot:
+                break
+        else:
+            # we have this one already
+            continue
+
+    # Step 7: Plot the moving averages for the top 6 most repeated 'کد تنوع' with product names in the legend
+    plot_moving_average_all(filtered_df, bot_workspace_df, filtered_top_kod_tanavo, show_least_selling=show_least_selling,
+                            window_size=1 if show_least_selling else 5)
 
 
 def plots_gooshi_shop_channel(filtered_df):
@@ -232,20 +339,20 @@ def plots_for_digikala_channel(filtered_df):
         print("Error: Required columns for Digikala price comparisons are missing.")
 
 
-def save_filtered_data(filtered_df, file_name):
-    try:
-        filtered_df.to_excel(file_name, index=False)
-        print(f"Filtered data saved to {file_name}")
-    except Exception as e:
-        print(f"Error saving filtered data: {e}")
+# def save_filtered_data(filtered_df, file_name):
+#     try:
+#         filtered_df.to_excel(file_name, index=False)
+#         print(f"Filtered data saved to {file_name}")
+#     except Exception as e:
+#         print(f"Error saving filtered data: {e}")
 
 if __name__ == '__main__':
     file_path = 'ثبت روزانه سبدهای پیشنهادی تامین کنندگان-3.xlsx'
-    sheets_dict = read_data(file_path, 'PriceData')
+    sheets_dict = read_data(file_path, ['PriceData', 'BotWorkSpace', 'SellData'])
 
     if sheets_dict:
-        if 'PriceData' in sheets_dict:
+        if 'PriceData' in sheets_dict and 'BotWorkSpace' in sheets_dict:
             price_data_df = sheets_dict['PriceData']
-            process_price_data(price_data_df)
+            process_price_data(price_data_df, bot_workspace_df=sheets_dict['BotWorkSpace'])
         else:
             print("Error: 'PriceData' sheet not found in the Excel file.")

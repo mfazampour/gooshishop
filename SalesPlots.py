@@ -11,11 +11,14 @@ import matplotlib.colors as mcolors
 
 
 class SalesPlotter:
-    def __init__(self, filtered_df, bot_workspace_df):
+    def __init__(self, filtered_df, bot_workspace_df, sale_channel: str = None):
         self.filtered_df = filtered_df.copy()
         self.bot_workspace_df = bot_workspace_df.copy()
         self.window_size = 5  # Default window size for moving averages
-        self.window_size_weekly = 3 # Default window size for moving averages on week days
+        self.window_size_weekly = 3  # Default window size for moving averages on week days
+        self.plot_title_suffix = f" فروش در {sale_channel}" if sale_channel is not None else ''
+        self.plot_title_suffix = get_display(arabic_reshaper.reshape(self.plot_title_suffix))
+
         self._prepare_data()
 
     def _prepare_data(self):
@@ -35,8 +38,12 @@ class SalesPlotter:
         return bidi_name
 
     def get_kod_mahsul_for_kod_tanavo(self, kod_tanavo):
-        kod_mahsul = self.bot_workspace_df[self.bot_workspace_df['کد تنوع'] == kod_tanavo]['کد محصول'].iloc[0]
-        return kod_mahsul
+        kod_mahsul = self.bot_workspace_df[self.bot_workspace_df['کد تنوع'] == kod_tanavo]
+        if kod_mahsul.__len__() > 0:
+            kod_mahsul = self.bot_workspace_df[self.bot_workspace_df['کد تنوع'] == kod_tanavo]['کد محصول'].iloc[0]
+            return kod_mahsul
+        else:  # it is strange but there are some that do not exist here
+            return None
 
     def get_all_kod_tanavo_for_kod_mahsul(self, kod_mahsul):
         return self.bot_workspace_df[self.bot_workspace_df['کد محصول'] == kod_mahsul]['کد تنوع'].dropna().unique()
@@ -53,6 +60,8 @@ class SalesPlotter:
         filtered_top_kod_tanavo = []
         for kod_tanavo in top_kod_tanavo:
             kod_mahsul = self.get_kod_mahsul_for_kod_tanavo(kod_tanavo)
+            if kod_mahsul is None:
+                continue
             if kod_mahsul not in prod_id_list:
                 prod_id_list.append(kod_mahsul)
                 filtered_top_kod_tanavo.append(kod_tanavo)
@@ -73,7 +82,7 @@ class SalesPlotter:
         stats = df.groupby(time_unit)['sales_count'].agg(['mean', 'std']).reindex(time_values, fill_value=0)
         return stats
 
-    def compute_moving_average(self, data_series, window_size = None):
+    def compute_moving_average(self, data_series, window_size=None):
         if not window_size:
             window_size = self.window_size
         # Circularly extend the data for moving average
@@ -95,6 +104,8 @@ class SalesPlotter:
         for kod_tanavo in filtered_top_kod_tanavo:
             # Get corresponding 'کد محصول' and all 'کد تنوع'
             kod_mahsul = self.get_kod_mahsul_for_kod_tanavo(kod_tanavo)
+            if kod_mahsul is None:
+                continue
             all_kod_tanavo = self.get_all_kod_tanavo_for_kod_mahsul(kod_mahsul)
 
             # Filter DataFrame for the product
@@ -129,6 +140,8 @@ class SalesPlotter:
         plt.figure(figsize=(12, 8))
         for kod_tanavo in filtered_top_kod_tanavo:
             kod_mahsul = self.get_kod_mahsul_for_kod_tanavo(kod_tanavo)
+            if kod_mahsul is None:
+                continue
             all_kod_tanavo = self.get_all_kod_tanavo_for_kod_mahsul(kod_mahsul)
 
             # Filter DataFrame for the product
@@ -162,6 +175,7 @@ class SalesPlotter:
         self.set_title_and_labels(legend_title, time_unit, time_values, title_text, xlabel)
 
     def set_title_and_labels(self, legend_title, time_unit, time_values, title_text, xlabel):
+        title_text += self.plot_title_suffix
         # Set titles and labels
         plt.title(title_text, fontdict={'fontname': 'XB Zar', 'fontsize': 16})
         plt.xlabel(xlabel, fontdict={'fontname': 'XB Zar', 'fontsize': 14})
@@ -198,8 +212,10 @@ class SalesPlotter:
         # Compute stats
         stats = self.compute_stats_by_time_unit(date_time_df, time_unit)
         # Compute moving average
-        mean_moving_avg = self.compute_moving_average(stats['mean'], window_size=self.window_size if time_unit == 'hour' else 3)
-        std_moving_avg = self.compute_moving_average(stats['std'], window_size=self.window_size if time_unit == 'hour' else 3)
+        mean_moving_avg = self.compute_moving_average(stats['mean'],
+                                                      window_size=self.window_size if time_unit == 'hour' else self.window_size_weekly)
+        std_moving_avg = self.compute_moving_average(stats['std'],
+                                                     window_size=self.window_size if time_unit == 'hour' else self.window_size_weekly)
 
         return mean_moving_avg, std_moving_avg
 
